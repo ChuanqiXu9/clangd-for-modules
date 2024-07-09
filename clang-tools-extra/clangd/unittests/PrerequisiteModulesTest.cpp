@@ -386,6 +386,20 @@ export int B = 44 + M;
 
   // Check that we're reusing the module files.
   EXPECT_EQ(HSOptsA.PrebuiltModuleFiles, HSOptsB.PrebuiltModuleFiles);
+
+  Builder.reset();
+
+  // Check that the persistent module file exists.
+  llvm::SmallString<256> CacheDir = StringRef(HSOptsA.PrebuiltModuleFiles["M"]);
+  llvm::sys::path::remove_filename(CacheDir);
+  llvm::sys::path::append(CacheDir, "M.pcm");
+  EXPECT_TRUE(llvm::sys::fs::exists(CacheDir));
+
+  Builder = ModulesBuilder::getModulesBuilder(CDB);
+  Builder->buildPrerequisiteModulesFor(getFullPath("A.cppm"), TFS);
+  // Check that the persistent module file are touched.
+  // FIXME: It is not tested very well.
+  EXPECT_FALSE(llvm::sys::fs::exists(CacheDir));
 }
 
 } // namespace

@@ -23,21 +23,27 @@ namespace {
 
 // Create a path to store module files. Generally it should be:
 //
-//   {TEMP_DIRS}/clangd/module_files/{file-name}/.
+//   {ROOT_OF_PROJECT}/clangd/module_files/{ModuleName}/.
 //
-// {TEMP_DIRS} is the temporary directory for the system, e.g., "/var/tmp"
-// or "C:/TEMP".
+// @param Mainfile is used to calculate the root of the project.
 //
 // TODO: Move these module fils out of the temporary directory if the module
 // files are persistent.
-llvm::SmallString<256> getModuleFilesPath(PathRef MainFile) {
-  llvm::SmallString<256> Result;
+llvm::SmallString<256> getModuleFilesPath(const GlobalCompilationDatabase &CDB,
+                                          PathRef MainFile,
+                                          StringRef ModuleName) {
+  std::optional<ProjectInfo> PI = CDB.getProjectInfo(MainFile);
+  if (!PI)
+    return {};
+
+  // FIXME: PI->SourceRoot may be empty, depending on the CDB strategy.
+  llvm::SmallString<256> Result(PI->SourceRoot);
 
   llvm::sys::path::system_temp_directory(/*erasedOnReboot=*/true, Result);
 
   llvm::sys::path::append(Result, "clangd");
   llvm::sys::path::append(Result, "module_files");
-  llvm::sys::path::append(Result, MainFile);
+  llvm::sys::path::append(Result, ModuleName);
 
   llvm::sys::fs::create_directories(Result);
   return Result;
@@ -282,6 +288,7 @@ buildModuleFile(llvm::StringRef ModuleName, PathRef ModuleUnitFileName,
 class ReusableModulesBuilder : public ModulesBuilder {
 public:
   ReusableModulesBuilder(const GlobalCompilationDatabase &CDB) : CDB(CDB) {}
+  ~ReusableModulesBuilder();
 
   ReusableModulesBuilder(const ReusableModulesBuilder &) = delete;
   ReusableModulesBuilder(ReusableModulesBuilder &&) = delete;
@@ -478,6 +485,29 @@ ReusableModulesBuilder::getOrCreateModuleBuildingCVAndLock(
                                    CVIter->getValue(), *this);
 }
 
+static std::optional<ModuleFile>
+getExistingModuleFile(StringRef ModuleFilesPrefix, StringRef ModuleName,
+                      PrerequisiteModules &BuiltModuleFiles) {
+  llvm::SmallString<256> Path(ModuleFilesPrefix);
+  llvm::sys::path::append(Path, ModuleName + ".pcm");
+  if (!llvm::sys::fs::exists(Path))
+    return std::nullopt;
+
+  if (IsModuleFileUpToDate(Path, BuiltModuleFiles)) {
+    log("Reuse existing module file {0} for {1}", Path, ModuleName);
+    // Rename it to avoid it gets invalid some times surprisingly.
+    std::string NewName =
+        getUniqueModuleFilePath(ModuleName, ModuleFilesPrefix);
+    llvm::sys::fs::rename(Path, NewName);
+    return ModuleFile{(std::string)ModuleName, (std::string)NewName};
+  }
+
+  // If it is not update to date, clear it.
+  llvm::sys::fs::remove(Path);
+
+  return std::nullopt;
+}
+
 bool ReusableModulesBuilder::getOrBuildModuleFile(
     StringRef ModuleName, const ThreadsafeFS &TFS, ProjectModules &MDB,
     ReusablePrerequisiteModules &BuiltModuleFiles) {
@@ -541,11 +571,14 @@ bool ReusableModulesBuilder::getOrBuildModuleFile(
   startBuildingModule(ModuleName);
 
   llvm::SmallString<256> ModuleFilesPrefix =
-      getModuleFilesPath(ModuleUnitFileName);
+      getModuleFilesPath(CDB, ModuleUnitFileName, ModuleName);
 
   std::optional<ModuleFile> MF =
-      buildModuleFile(ModuleName, ModuleUnitFileName, CDB, TFS,
-                      ModuleFilesPrefix, BuiltModuleFiles);
+      getExistingModuleFile(ModuleFilesPrefix, ModuleName, BuiltModuleFiles);
+
+  if (!MF)
+    MF = buildModuleFile(ModuleName, ModuleUnitFileName, CDB, TFS,
+                         ModuleFilesPrefix, BuiltModuleFiles);
 
   bool BuiltSuccessed = (bool)MF;
   if (MF) {
@@ -561,6 +594,20 @@ bool ReusableModulesBuilder::getOrBuildModuleFile(
   endBuildingModule(ModuleName);
   CV.notify_all();
   return BuiltSuccessed;
+}
+
+// When we destruct the modules builder, rename all the module files
+// to a canonical form so that we can access them next time without
+// rebuilding them.
+ReusableModulesBuilder::~ReusableModulesBuilder() {
+  std::lock_guard<std::mutex> _(ModuleFilesMutex);
+  for (auto &Iter : ModuleFiles) {
+    ModuleFile &MF = *Iter.second;
+    llvm::SmallString<256> ModuleFilePath(MF.ModuleFilePath);
+    llvm::sys::path::remove_filename(ModuleFilePath);
+    llvm::sys::path::append(ModuleFilePath, MF.ModuleName + ".pcm");
+    llvm::sys::fs::copy_file(MF.ModuleFilePath, ModuleFilePath);
+  }
 }
 
 } // namespace
