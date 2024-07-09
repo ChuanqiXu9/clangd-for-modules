@@ -12,6 +12,8 @@
 #include "support/Path.h"
 #include "support/ThreadsafeFS.h"
 
+#include "clang/Tooling/CompilationDatabase.h"
+
 #include <memory>
 
 namespace clang {
@@ -37,11 +39,15 @@ namespace clangd {
 class ProjectModules {
 public:
   virtual std::vector<std::string> getRequiredModules(PathRef File) = 0;
-  virtual PathRef
-  getSourceForModuleName(llvm::StringRef ModuleName,
-                         PathRef RequiredSrcFile = PathRef()) = 0;
+  virtual std::string getSourceForModuleName(llvm::StringRef ModuleName) = 0;
+
+  virtual void
+  update(std::shared_ptr<const clang::tooling::CompilationDatabase> CDB,
+         const ThreadsafeFS &TFS) = 0;
 
   virtual ~ProjectModules() = default;
+
+  static std::unique_ptr<ProjectModules> getProjectModules();
 };
 
 } // namespace clangd

@@ -287,7 +287,9 @@ buildModuleFile(llvm::StringRef ModuleName, PathRef ModuleUnitFileName,
 
 class ReusableModulesBuilder : public ModulesBuilder {
 public:
-  ReusableModulesBuilder(const GlobalCompilationDatabase &CDB) : CDB(CDB) {}
+  ReusableModulesBuilder(const GlobalCompilationDatabase &CDB) : CDB(CDB) {
+    MDB = ProjectModules::getProjectModules();
+  }
   ~ReusableModulesBuilder();
 
   ReusableModulesBuilder(const ReusableModulesBuilder &) = delete;
@@ -301,19 +303,16 @@ public:
 
 private:
   bool getOrBuildModuleFile(StringRef ModuleName, const ThreadsafeFS &TFS,
-                            ProjectModules &MDB,
                             ReusablePrerequisiteModules &RequiredModules);
 
   std::shared_ptr<ModuleFile>
-  getValidModuleFile(StringRef ModuleName, ProjectModules &MDB,
-                     const ThreadsafeFS &TFS,
+  getValidModuleFile(StringRef ModuleName, const ThreadsafeFS &TFS,
                      PrerequisiteModules &BuiltModuleFiles);
   /// This should only be called by getValidModuleFile. This is unlocked version
   /// of getValidModuleFile. This is extracted to avoid dead locks when
   /// recursing.
   std::shared_ptr<ModuleFile>
-  isValidModuleFileUnlocked(StringRef ModuleName, ProjectModules &MDB,
-                            const ThreadsafeFS &TFS,
+  isValidModuleFileUnlocked(StringRef ModuleName, const ThreadsafeFS &TFS,
                             PrerequisiteModules &BuiltModuleFiles);
 
   llvm::StringMap<std::shared_ptr<ModuleFile>> ModuleFiles;
@@ -374,6 +373,7 @@ private:
   getOrCreateModuleBuildingCVAndLock(StringRef ModuleName);
 
   const GlobalCompilationDatabase &CDB;
+  std::unique_ptr<ProjectModules> MDB;
 };
 
 ReusableModulesBuilder::ModuleBuildingSharedOwner::
@@ -396,7 +396,7 @@ ReusableModulesBuilder::ModuleBuildingSharedOwner::
 }
 
 std::shared_ptr<ModuleFile> ReusableModulesBuilder::isValidModuleFileUnlocked(
-    StringRef ModuleName, ProjectModules &MDB, const ThreadsafeFS &TFS,
+    StringRef ModuleName, const ThreadsafeFS &TFS,
     PrerequisiteModules &BuiltModuleFiles) {
   auto Iter = ModuleFiles.find(ModuleName);
   if (Iter != ModuleFiles.end()) {
@@ -408,9 +408,9 @@ std::shared_ptr<ModuleFile> ReusableModulesBuilder::isValidModuleFileUnlocked(
     }
 
     if (llvm::any_of(
-            MDB.getRequiredModules(MDB.getSourceForModuleName(ModuleName)),
-            [&MDB, &TFS, &BuiltModuleFiles, this](auto &&RequiredModuleName) {
-              return !isValidModuleFileUnlocked(RequiredModuleName, MDB, TFS,
+            MDB->getRequiredModules(MDB->getSourceForModuleName(ModuleName)),
+            [&TFS, &BuiltModuleFiles, this](auto &&RequiredModuleName) {
+              return !isValidModuleFileUnlocked(RequiredModuleName, TFS,
                                                 BuiltModuleFiles);
             })) {
       ModuleFiles.erase(Iter);
@@ -426,21 +426,17 @@ std::shared_ptr<ModuleFile> ReusableModulesBuilder::isValidModuleFileUnlocked(
 }
 
 std::shared_ptr<ModuleFile> ReusableModulesBuilder::getValidModuleFile(
-    StringRef ModuleName, ProjectModules &MDB, const ThreadsafeFS &TFS,
+    StringRef ModuleName, const ThreadsafeFS &TFS,
     PrerequisiteModules &BuiltModuleFiles) {
   std::lock_guard<std::mutex> _(ModuleFilesMutex);
 
-  return isValidModuleFileUnlocked(ModuleName, MDB, TFS, BuiltModuleFiles);
+  return isValidModuleFileUnlocked(ModuleName, TFS, BuiltModuleFiles);
 }
 
 std::unique_ptr<PrerequisiteModules>
 ReusableModulesBuilder::buildPrerequisiteModulesFor(PathRef File,
                                                     const ThreadsafeFS &TFS) {
-  std::unique_ptr<ProjectModules> MDB = CDB.getProjectModules(File);
-  if (!MDB) {
-    elog("Failed to get Project Modules information for {0}", File);
-    return std::make_unique<FailedPrerequisiteModules>();
-  }
+  CDB.updateProjectModules(File, *MDB);
 
   std::vector<std::string> RequiredModuleNames = MDB->getRequiredModules(File);
   if (RequiredModuleNames.empty())
@@ -452,7 +448,7 @@ ReusableModulesBuilder::buildPrerequisiteModulesFor(PathRef File,
 
   for (const std::string &RequiredModuleName : RequiredModuleNames)
     // Return early if there is any error.
-    if (!getOrBuildModuleFile(RequiredModuleName, TFS, *MDB.get(),
+    if (!getOrBuildModuleFile(RequiredModuleName, TFS,
                               *RequiredModules.get())) {
       elog("Failed to build module {0};", RequiredModuleName);
       return std::make_unique<FailedPrerequisiteModules>();
@@ -509,12 +505,12 @@ getExistingModuleFile(StringRef ModuleFilesPrefix, StringRef ModuleName,
 }
 
 bool ReusableModulesBuilder::getOrBuildModuleFile(
-    StringRef ModuleName, const ThreadsafeFS &TFS, ProjectModules &MDB,
+    StringRef ModuleName, const ThreadsafeFS &TFS,
     ReusablePrerequisiteModules &BuiltModuleFiles) {
   if (BuiltModuleFiles.isModuleUnitBuilt(ModuleName))
     return true;
 
-  PathRef ModuleUnitFileName = MDB.getSourceForModuleName(ModuleName);
+  std::string ModuleUnitFileName = MDB->getSourceForModuleName(ModuleName);
   /// It is possible that we're meeting third party modules (modules whose
   /// source are not in the project. e.g, the std module may be a third-party
   /// module for most project) or something wrong with the implementation of
@@ -527,16 +523,16 @@ bool ReusableModulesBuilder::getOrBuildModuleFile(
     return false;
   }
 
-  for (auto &RequiredModuleName : MDB.getRequiredModules(ModuleUnitFileName)) {
+  for (auto &RequiredModuleName : MDB->getRequiredModules(ModuleUnitFileName)) {
     // Return early if there are errors building the module file.
-    if (!getOrBuildModuleFile(RequiredModuleName, TFS, MDB, BuiltModuleFiles)) {
+    if (!getOrBuildModuleFile(RequiredModuleName, TFS, BuiltModuleFiles)) {
       log("Failed to build module {0}", RequiredModuleName);
       return false;
     }
   }
 
   if (std::shared_ptr<ModuleFile> Cached =
-          getValidModuleFile(ModuleName, MDB, TFS, BuiltModuleFiles)) {
+          getValidModuleFile(ModuleName, TFS, BuiltModuleFiles)) {
     log("Reusing module {0} from {1}", ModuleName, Cached->ModuleFilePath);
     BuiltModuleFiles.addModuleFile(Cached);
     return true;

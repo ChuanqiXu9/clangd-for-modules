@@ -12,7 +12,6 @@
 #ifndef _WIN32
 
 #include "ModulesBuilder.h"
-#include "ScanningProjectModules.h"
 
 #include "Annotations.h"
 #include "CodeComplete.h"
@@ -41,8 +40,8 @@ public:
 
   void addFile(llvm::StringRef Path, llvm::StringRef Contents);
 
-  std::unique_ptr<ProjectModules> getProjectModules(PathRef) const override {
-    return scanningProjectModules(MockedCDBPtr, TFS);
+  void updateProjectModules(PathRef File, ProjectModules &PM) const override {
+    PM.update(MockedCDBPtr, TFS);
   }
 
 private:

@@ -34,11 +34,8 @@ namespace {
 /// interfere with each other.
 class ModuleDependencyScanner {
 public:
-  ModuleDependencyScanner(
-      std::shared_ptr<const clang::tooling::CompilationDatabase> CDB,
-      const ThreadsafeFS &TFS)
-      : CDB(CDB), TFS(TFS),
-        Service(tooling::dependencies::ScanningMode::CanonicalPreprocessing,
+  ModuleDependencyScanner()
+      : Service(tooling::dependencies::ScanningMode::CanonicalPreprocessing,
                 tooling::dependencies::ScanningOutputFormat::P1689) {}
 
   /// The scanned modules dependency information for a specific source file.
@@ -52,44 +49,38 @@ public:
   /// Scanning the single file specified by \param FilePath.
   std::optional<ModuleDependencyInfo> scan(PathRef FilePath);
 
-  /// Scanning every source file in the current project to get the
-  /// <module-name> to <module-unit-source> map.
-  /// TODO: We should find an efficient method to get the <module-name>
-  /// to <module-unit-source> map. We can make it either by providing
-  /// a global module dependency scanner to monitor every file. Or we
-  /// can simply require the build systems (or even the end users)
-  /// to provide the map.
-  void globalScan();
-
   /// Get the source file from the module name. Note that the language
   /// guarantees all the module names are unique in a valid program.
   /// This function should only be called after globalScan.
   ///
   /// TODO: We should handle the case that there are multiple source files
   /// declaring the same module.
-  PathRef getSourceForModuleName(llvm::StringRef ModuleName) const;
+  PathRef getSourceForModuleNameSlow(llvm::StringRef ModuleName);
 
   /// Return the direct required modules. Indirect required modules are not
   /// included.
   std::vector<std::string> getRequiredModules(PathRef File);
 
+  void update(std::shared_ptr<const clang::tooling::CompilationDatabase> CDB,
+              const ThreadsafeFS &TFS) {
+    this->CDB = CDB;
+    this->TFS = &TFS;
+  }
+
 private:
   std::shared_ptr<const clang::tooling::CompilationDatabase> CDB;
-  const ThreadsafeFS &TFS;
-
-  // Whether the scanner has scanned the project globally.
-  bool GlobalScanned = false;
+  const ThreadsafeFS *TFS;
 
   clang::tooling::dependencies::DependencyScanningService Service;
-
-  // TODO: Add a scanning cache.
-
-  // Map module name to source file path.
-  llvm::StringMap<std::string> ModuleNameToSource;
 };
 
 std::optional<ModuleDependencyScanner::ModuleDependencyInfo>
 ModuleDependencyScanner::scan(PathRef FilePath) {
+  if (!CDB) {
+    elog("We need to assign Compilation to Database before scanning.");
+    return std::nullopt;
+  }
+
   auto Candidates = CDB->getCompileCommands(FilePath);
   if (Candidates.empty())
     return std::nullopt;
@@ -103,7 +94,7 @@ ModuleDependencyScanner::scan(PathRef FilePath) {
 
   llvm::SmallString<128> FilePathDir(FilePath);
   llvm::sys::path::remove_filename(FilePathDir);
-  DependencyScanningTool ScanningTool(Service, TFS.view(FilePathDir));
+  DependencyScanningTool ScanningTool(Service, TFS->view(FilePathDir));
 
   llvm::Expected<P1689Rule> ScanningResult =
       ScanningTool.getP1689ModuleDependencyFile(Cmd, Cmd.Directory);
@@ -116,10 +107,8 @@ ModuleDependencyScanner::scan(PathRef FilePath) {
 
   ModuleDependencyInfo Result;
 
-  if (ScanningResult->Provides) {
-    ModuleNameToSource[ScanningResult->Provides->ModuleName] = FilePath;
+  if (ScanningResult->Provides)
     Result.ModuleName = ScanningResult->Provides->ModuleName;
-  }
 
   for (auto &Required : ScanningResult->Requires)
     Result.RequiredModules.push_back(Required.ModuleName);
@@ -127,22 +116,17 @@ ModuleDependencyScanner::scan(PathRef FilePath) {
   return Result;
 }
 
-void ModuleDependencyScanner::globalScan() {
+PathRef ModuleDependencyScanner::getSourceForModuleNameSlow(
+    llvm::StringRef ModuleName) {
+  if (!CDB) {
+    elog("We need to assign Compilation to Database before scanning.");
+    return {};
+  }
+
   for (auto &File : CDB->getAllFiles())
-    scan(File);
-
-  GlobalScanned = true;
-}
-
-PathRef ModuleDependencyScanner::getSourceForModuleName(
-    llvm::StringRef ModuleName) const {
-  assert(
-      GlobalScanned &&
-      "We should only call getSourceForModuleName after calling globalScan()");
-
-  if (auto It = ModuleNameToSource.find(ModuleName);
-      It != ModuleNameToSource.end())
-    return It->second;
+    if (auto ScanningResult = scan(File))
+      if (ScanningResult->ModuleName == ModuleName)
+        return File;
 
   return {};
 }
@@ -157,43 +141,58 @@ ModuleDependencyScanner::getRequiredModules(PathRef File) {
 }
 } // namespace
 
-/// TODO: The existing `ScanningAllProjectModules` is not efficient. See the
-/// comments in ModuleDependencyScanner for detail.
-///
-/// In the future, we wish the build system can provide a well design
-/// compilation database for modules then we can query that new compilation
-/// database directly. Or we need to have a global long-live scanner to detect
-/// the state of each file.
-class ScanningAllProjectModules : public ProjectModules {
+class ProjectModulesImpl : public ProjectModules {
 public:
-  ScanningAllProjectModules(
-      std::shared_ptr<const clang::tooling::CompilationDatabase> CDB,
-      const ThreadsafeFS &TFS)
-      : Scanner(CDB, TFS) {}
+  ProjectModulesImpl() = default;
 
-  ~ScanningAllProjectModules() override = default;
+  ~ProjectModulesImpl() override = default;
 
   std::vector<std::string> getRequiredModules(PathRef File) override {
     return Scanner.getRequiredModules(File);
   }
 
-  /// RequiredSourceFile is not used intentionally. See the comments of
-  /// ModuleDependencyScanner for detail.
-  PathRef
-  getSourceForModuleName(llvm::StringRef ModuleName,
-                         PathRef RequiredSourceFile = PathRef()) override {
-    Scanner.globalScan();
-    return Scanner.getSourceForModuleName(ModuleName);
+  std::string getSourceForModuleName(llvm::StringRef ModuleName) override {
+    auto Iter = ModuleNameSourcesCache.find(ModuleName);
+    if (Iter != ModuleNameSourcesCache.end()) {
+      // We need to verify it since the cache is not stable - it'll
+      // be meaningless if the users change its content.
+      if (verifyModuleUnit(Iter->second, ModuleName))
+        return Iter->second;
+
+      // If it is not valid, we need to clear it.
+      ModuleNameSourcesCache.erase(Iter);
+    }
+
+    // Fallback to slow case.
+    PathRef ResultPath = Scanner.getSourceForModuleNameSlow(ModuleName);
+    if (!ResultPath.empty())
+      ModuleNameSourcesCache.insert_or_assign(ModuleName, ResultPath);
+
+    return ResultPath.str();
+  }
+
+  void update(std::shared_ptr<const clang::tooling::CompilationDatabase> CDB,
+              const ThreadsafeFS &TFS) override {
+    Scanner.update(CDB, TFS);
   }
 
 private:
+  /// Check if @param File declares a module with name @param ModuleName.
+  bool verifyModuleUnit(PathRef File, llvm::StringRef ModuleName) {
+    auto ScanningResult = Scanner.scan(File);
+    if (!ScanningResult)
+      return false;
+
+    return ScanningResult->ModuleName == ModuleName;
+  }
+
   ModuleDependencyScanner Scanner;
+
+  llvm::StringMap<std::string> ModuleNameSourcesCache;
 };
 
-std::unique_ptr<ProjectModules> scanningProjectModules(
-    std::shared_ptr<const clang::tooling::CompilationDatabase> CDB,
-    const ThreadsafeFS &TFS) {
-  return std::make_unique<ScanningAllProjectModules>(CDB, TFS);
+std::unique_ptr<ProjectModules> ProjectModules::getProjectModules() {
+  return std::make_unique<ProjectModulesImpl>();
 }
 
 } // namespace clang::clangd

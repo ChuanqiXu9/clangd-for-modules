@@ -103,8 +103,8 @@ add_clang_library(clangDaemon
   Quality.cpp
   ParsedAST.cpp
   Preamble.cpp
+  ProjectModules.cpp
   RIFF.cpp
-  ScanningProjectModules.cpp
   Selection.cpp
   SemanticHighlighting.cpp
   SemanticSelection.cpp

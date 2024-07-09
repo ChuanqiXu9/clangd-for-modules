@@ -10,7 +10,6 @@
 #include "Config.h"
 #include "FS.h"
 #include "ProjectModules.h"
-#include "ScanningProjectModules.h"
 #include "SourceCode.h"
 #include "support/Logger.h"
 #include "support/Path.h"
@@ -743,8 +742,8 @@ DirectoryBasedGlobalCompilationDatabase::getProjectInfo(PathRef File) const {
   return Res->PI;
 }
 
-std::unique_ptr<ProjectModules>
-DirectoryBasedGlobalCompilationDatabase::getProjectModules(PathRef File) const {
+void DirectoryBasedGlobalCompilationDatabase::updateProjectModules(
+    PathRef File, ProjectModules &PM) const {
   CDBLookupRequest Req;
   Req.FileName = File;
   Req.ShouldBroadcast = false;
@@ -752,9 +751,9 @@ DirectoryBasedGlobalCompilationDatabase::getProjectModules(PathRef File) const {
       std::chrono::steady_clock::time_point::min();
   auto Res = lookupCDB(Req);
   if (!Res)
-    return {};
+    return;
 
-  return scanningProjectModules(Res->CDB, Opts.TFS);
+  PM.update(Res->CDB, Opts.TFS);
 }
 
 OverlayCDB::OverlayCDB(const GlobalCompilationDatabase *Base,
@@ -849,11 +848,11 @@ std::optional<ProjectInfo> DelegatingCDB::getProjectInfo(PathRef File) const {
   return Base->getProjectInfo(File);
 }
 
-std::unique_ptr<ProjectModules>
-DelegatingCDB::getProjectModules(PathRef File) const {
+void DelegatingCDB::updateProjectModules(PathRef File,
+                                         ProjectModules &PM) const {
   if (!Base)
-    return nullptr;
-  return Base->getProjectModules(File);
+    return;
+  Base->updateProjectModules(File, PM);
 }
 
 tooling::CompileCommand DelegatingCDB::getFallbackCommand(PathRef File) const {

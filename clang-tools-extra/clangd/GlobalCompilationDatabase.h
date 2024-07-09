@@ -47,9 +47,8 @@ public:
   }
 
   /// Get the modules in the closest project to \p File
-  virtual std::unique_ptr<ProjectModules>
-  getProjectModules(PathRef File) const {
-    return nullptr;
+  virtual void updateProjectModules(PathRef File, ProjectModules &) const {
+    return;
   }
 
   /// Makes a guess at how to build a file.
@@ -83,8 +82,7 @@ public:
 
   std::optional<ProjectInfo> getProjectInfo(PathRef File) const override;
 
-  std::unique_ptr<ProjectModules>
-  getProjectModules(PathRef File) const override;
+  void updateProjectModules(PathRef File, ProjectModules &) const override;
 
   tooling::CompileCommand getFallbackCommand(PathRef File) const override;
 
@@ -132,8 +130,7 @@ public:
   /// \p File's parents.
   std::optional<ProjectInfo> getProjectInfo(PathRef File) const override;
 
-  std::unique_ptr<ProjectModules>
-  getProjectModules(PathRef File) const override;
+  void updateProjectModules(PathRef File, ProjectModules &) const override;
 
   bool blockUntilIdle(Deadline Timeout) const override;
 
