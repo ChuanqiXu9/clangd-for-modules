@@ -132,13 +132,12 @@ struct ModuleFile {
 
 bool IsModuleFileUpToDate(
     PathRef ModuleFilePath,
-    const PrerequisiteModules *RequisiteModules) {
+    const PrerequisiteModules &RequisiteModules) {
 IntrusiveRefCntPtr<DiagnosticsEngine> Diags =
       CompilerInstance::createDiagnostics(new DiagnosticOptions());
 
   auto HSOpts = std::make_shared<HeaderSearchOptions>();
-  if (RequisiteModules)
-    RequisiteModules->adjustHeaderSearchOptions(*HSOpts);
+  RequisiteModules.adjustHeaderSearchOptions(*HSOpts);
   HSOpts->ForceCheckCXX20ModulesInputFiles = true;
   HSOpts->ValidateASTInputFilesContent = true;
 
@@ -171,8 +170,8 @@ IntrusiveRefCntPtr<DiagnosticsEngine> Diags =
 
 bool IsModuleFilesUpToDate(
     llvm::SmallVector<PathRef> ModuleFilePaths,
-    const PrerequisiteModules *RequisiteModules = nullptr) {
-  return llvm::all_of(ModuleFilePaths, [RequisiteModules](auto ModuleFilePath) {
+    const PrerequisiteModules &RequisiteModules) {
+  return llvm::all_of(ModuleFilePaths, [&RequisiteModules](auto ModuleFilePath) {
     return IsModuleFileUpToDate(ModuleFilePath, RequisiteModules);
   });
 }
@@ -297,7 +296,7 @@ llvm::Error buildModuleFile(llvm::StringRef ModuleName,
         "Failed to build '{0}': Failed to prepare compiler instance for {0}",
         ModuleName, ModuleUnitFileName));
 
-  GenerateModuleInterfaceAction Action;
+  GenerateReducedModuleInterfaceAction Action;
   Clang->ExecuteAction(Action);
 
   if (Clang->getDiagnostics().hasErrorOccurred())
@@ -355,7 +354,7 @@ bool StandalonePrerequisiteModules::canReuse(
   SmallVector<StringRef> BMIPaths;
   for (auto &MF : RequiredModules)
     BMIPaths.push_back(MF.ModuleFilePath);
-  return IsModuleFilesUpToDate(BMIPaths, this);
+  return IsModuleFilesUpToDate(BMIPaths, *this);
 }
 
 } // namespace clangd
