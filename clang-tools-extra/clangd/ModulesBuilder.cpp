@@ -95,6 +95,88 @@ public:
   }
 };
 
+struct ModuleFile {
+  ModuleFile(StringRef ModuleName, PathRef ModuleFilePath)
+      : ModuleName(ModuleName.str()), ModuleFilePath(ModuleFilePath.str()) {}
+
+  ModuleFile() = delete;
+
+  ModuleFile(const ModuleFile &) = delete;
+  ModuleFile operator=(const ModuleFile &) = delete;
+
+  // The move constructor is needed for llvm::SmallVector.
+  ModuleFile(ModuleFile &&Other)
+      : ModuleName(std::move(Other.ModuleName)),
+        ModuleFilePath(std::move(Other.ModuleFilePath)) {
+    Other.ModuleName.clear();
+    Other.ModuleFilePath.clear();
+  }
+
+  ModuleFile &operator=(ModuleFile &&Other) {
+    if (this == &Other)
+      return *this;
+
+    this->~ModuleFile();
+    new (this) ModuleFile(std::move(Other));
+    return *this;
+  }
+
+  ~ModuleFile() {
+    if (!ModuleFilePath.empty())
+      llvm::sys::fs::remove(ModuleFilePath);
+  }
+
+  std::string ModuleName;
+  std::string ModuleFilePath;
+};
+
+bool IsModuleFileUpToDate(
+    PathRef ModuleFilePath,
+    const PrerequisiteModules *RequisiteModules) {
+IntrusiveRefCntPtr<DiagnosticsEngine> Diags =
+      CompilerInstance::createDiagnostics(new DiagnosticOptions());
+
+  auto HSOpts = std::make_shared<HeaderSearchOptions>();
+  if (RequisiteModules)
+    RequisiteModules->adjustHeaderSearchOptions(*HSOpts);
+  HSOpts->ForceCheckCXX20ModulesInputFiles = true;
+  HSOpts->ValidateASTInputFilesContent = true;
+
+  PCHContainerOperations PCHOperations;
+  std::unique_ptr<ASTUnit> Unit = ASTUnit::LoadFromASTFile(
+      ModuleFilePath.str(), PCHOperations.getRawReader(), ASTUnit::LoadASTOnly,
+      Diags, FileSystemOptions(), std::move(HSOpts));
+
+  if (!Unit)
+    return false;
+
+  auto Reader = Unit->getASTReader();
+  if (!Reader)
+    return false;
+
+  bool UpToDate = true;
+  Reader->getModuleManager().visit([&](serialization::ModuleFile &MF) -> bool {
+    Reader->visitInputFiles(
+        MF, /*IncludeSystem=*/false, /*Complain=*/false,
+        [&](const serialization::InputFile &IF, bool isSystem) {
+          if (!IF.getFile() || IF.isOutOfDate())
+            UpToDate = false;
+        });
+
+    return !UpToDate;
+  });
+
+  return UpToDate;
+}
+
+bool IsModuleFilesUpToDate(
+    llvm::SmallVector<PathRef> ModuleFilePaths,
+    const PrerequisiteModules *RequisiteModules = nullptr) {
+  return llvm::all_of(ModuleFilePaths, [RequisiteModules](auto ModuleFilePath) {
+    return IsModuleFileUpToDate(ModuleFilePath, RequisiteModules);
+  });
+}
+
 // StandalonePrerequisiteModules - stands for PrerequisiteModules for which all
 // the required modules are built successfully. All the module files
 // are owned by the StandalonePrerequisiteModules class.
@@ -131,37 +213,10 @@ public:
     return BuiltModuleNames.contains(ModuleName);
   }
 
-  void addModuleFile(llvm::StringRef ModuleName,
-                     llvm::StringRef ModuleFilePath) {
-    RequiredModules.emplace_back(ModuleName, ModuleFilePath);
-    BuiltModuleNames.insert(ModuleName);
+  void addModuleFile(ModuleFile &&MF) {
+    BuiltModuleNames.insert(MF.ModuleName);
+    RequiredModules.emplace_back(std::move(MF));
   }
-
-private:
-  struct ModuleFile {
-    ModuleFile(llvm::StringRef ModuleName, PathRef ModuleFilePath)
-        : ModuleName(ModuleName.str()), ModuleFilePath(ModuleFilePath.str()) {}
-
-    ModuleFile() = delete;
-
-    ModuleFile(const ModuleFile &) = delete;
-    ModuleFile operator=(const ModuleFile &) = delete;
-
-    // The move constructor is needed for llvm::SmallVector.
-    ModuleFile(ModuleFile &&Other)
-        : ModuleName(std::move(Other.ModuleName)),
-          ModuleFilePath(std::move(Other.ModuleFilePath)) {}
-
-    ModuleFile &operator=(ModuleFile &&Other) = delete;
-
-    ~ModuleFile() {
-      if (!ModuleFilePath.empty())
-        llvm::sys::fs::remove(ModuleFilePath);
-    }
-
-    std::string ModuleName;
-    std::string ModuleFilePath;
-  };
 
   llvm::SmallVector<ModuleFile, 8> RequiredModules;
   // A helper class to speedup the query if a module is built.
@@ -250,7 +305,7 @@ llvm::Error buildModuleFile(llvm::StringRef ModuleName,
         llvm::formatv("Failed to build '{0}': Compilation for {1} failed",
                       ModuleName, ModuleUnitFileName));
 
-  BuiltModuleFiles.addModuleFile(ModuleName, Inputs.CompileCommand.Output);
+  BuiltModuleFiles.addModuleFile({ModuleName, Inputs.CompileCommand.Output});
   return llvm::Error::success();
 }
 } // namespace
@@ -297,43 +352,10 @@ bool StandalonePrerequisiteModules::canReuse(
   if (RequiredModules.empty())
     return true;
 
-  CompilerInstance Clang;
-
-  Clang.setInvocation(std::make_shared<CompilerInvocation>(CI));
-  IntrusiveRefCntPtr<DiagnosticsEngine> Diags =
-      CompilerInstance::createDiagnostics(new DiagnosticOptions());
-  Clang.setDiagnostics(Diags.get());
-
-  FileManager *FM = Clang.createFileManager(VFS);
-  Clang.createSourceManager(*FM);
-
-  if (!Clang.createTarget())
-    return false;
-
-  assert(Clang.getHeaderSearchOptsPtr());
-  adjustHeaderSearchOptions(Clang.getHeaderSearchOpts());
-  // Since we don't need to compile the source code actually, the TU kind here
-  // doesn't matter.
-  Clang.createPreprocessor(TU_Complete);
-  Clang.getHeaderSearchOpts().ForceCheckCXX20ModulesInputFiles = true;
-  Clang.getHeaderSearchOpts().ValidateASTInputFilesContent = true;
-
-  Clang.createASTReader();
-  for (auto &RequiredModule : RequiredModules) {
-    llvm::StringRef BMIPath = RequiredModule.ModuleFilePath;
-    // FIXME: Loading BMI fully is too heavy considering something cheaply to
-    // check if we can reuse the BMI.
-    auto ReadResult =
-        Clang.getASTReader()->ReadAST(BMIPath, serialization::MK_MainFile,
-                                      SourceLocation(), ASTReader::ARR_None);
-
-    if (ReadResult != ASTReader::Success) {
-      elog("Can't reuse {0}: {1}", BMIPath, ReadResult);
-      return false;
-    }
-  }
-
-  return true;
+  SmallVector<StringRef> BMIPaths;
+  for (auto &MF : RequiredModules)
+    BMIPaths.push_back(MF.ModuleFilePath);
+  return IsModuleFilesUpToDate(BMIPaths, this);
 }
 
 } // namespace clangd
