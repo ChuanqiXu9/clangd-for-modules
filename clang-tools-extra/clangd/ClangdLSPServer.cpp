@@ -569,8 +569,8 @@ void ClangdLSPServer::onInitialize(const InitializeParams &Params,
               std::move(Mangler));
 
   if (Opts.EnableExperimentalModulesSupport) {
-    ModulesManager.emplace(*CDB);
-    Opts.ModulesManager = &*ModulesManager;
+    ModulesManager = ModulesBuilder::getModulesBuilder(*CDB);
+    Opts.ModulesManager = ModulesManager.get();
   }
 
   {

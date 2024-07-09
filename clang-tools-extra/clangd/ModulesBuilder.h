@@ -89,7 +89,8 @@ public:
 /// different versions and different source files.
 class ModulesBuilder {
 public:
-  ModulesBuilder(const GlobalCompilationDatabase &CDB) : CDB(CDB) {}
+  ModulesBuilder() = default;
+  virtual ~ModulesBuilder() = default;
 
   ModulesBuilder(const ModulesBuilder &) = delete;
   ModulesBuilder(ModulesBuilder &&) = delete;
@@ -97,11 +98,11 @@ public:
   ModulesBuilder &operator=(const ModulesBuilder &) = delete;
   ModulesBuilder &operator=(ModulesBuilder &&) = delete;
 
-  std::unique_ptr<PrerequisiteModules>
-  buildPrerequisiteModulesFor(PathRef File, const ThreadsafeFS &TFS) const;
+  virtual std::unique_ptr<PrerequisiteModules>
+  buildPrerequisiteModulesFor(PathRef File, const ThreadsafeFS &TFS) = 0;
 
-private:
-  const GlobalCompilationDatabase &CDB;
+  static std::unique_ptr<ModulesBuilder>
+  getModulesBuilder(const GlobalCompilationDatabase &CDB);
 };
 
 } // namespace clangd

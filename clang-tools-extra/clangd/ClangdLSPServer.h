@@ -327,7 +327,7 @@ private:
   // The ClangdServer is created by the "initialize" LSP method.
   std::optional<ClangdServer> Server;
   // Manages to build module files.
-  std::optional<ModulesBuilder> ModulesManager;
+  std::unique_ptr<ModulesBuilder> ModulesManager;
 };
 } // namespace clangd
 } // namespace clang
