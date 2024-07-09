@@ -7,6 +7,8 @@ We still wish to contribute this to upstream.
 
 Following the instructions here to [build clangd from source](https://github.com/llvm/llvm-project/tree/main/clang-tools-extra/clangd#building-and-testing-clangd).
 
+A compile commands file is neceesary to use this with modules.
+
 To boost the process of scanning, users can provide a module map file to the clangd via the `--modules-map-path=<path-to-module-map-file>`. This is
 not necessary, but the clangd may scan all of the projects to figure out
 what is the source file to provide one specific module.
