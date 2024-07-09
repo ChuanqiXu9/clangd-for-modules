@@ -287,8 +287,10 @@ buildModuleFile(llvm::StringRef ModuleName, PathRef ModuleUnitFileName,
 
 class ReusableModulesBuilder : public ModulesBuilder {
 public:
-  ReusableModulesBuilder(const GlobalCompilationDatabase &CDB) : CDB(CDB) {
-    MDB = ProjectModules::getProjectModules();
+  ReusableModulesBuilder(const GlobalCompilationDatabase &CDB,
+                         PathRef ModuleMapPath)
+      : CDB(CDB) {
+    MDB = ProjectModules::getProjectModules(ModuleMapPath);
   }
   ~ReusableModulesBuilder();
 
@@ -408,7 +410,8 @@ std::shared_ptr<ModuleFile> ReusableModulesBuilder::isValidModuleFileUnlocked(
     }
 
     if (llvm::any_of(
-            MDB->getRequiredModules(MDB->getSourceForModuleName(ModuleName)),
+            MDB->getRequiredModules(
+                MDB->getSourceForModuleName(ModuleName, TFS)),
             [&TFS, &BuiltModuleFiles, this](auto &&RequiredModuleName) {
               return !isValidModuleFileUnlocked(RequiredModuleName, TFS,
                                                 BuiltModuleFiles);
@@ -510,7 +513,7 @@ bool ReusableModulesBuilder::getOrBuildModuleFile(
   if (BuiltModuleFiles.isModuleUnitBuilt(ModuleName))
     return true;
 
-  std::string ModuleUnitFileName = MDB->getSourceForModuleName(ModuleName);
+  std::string ModuleUnitFileName = MDB->getSourceForModuleName(ModuleName, TFS);
   /// It is possible that we're meeting third party modules (modules whose
   /// source are not in the project. e.g, the std module may be a third-party
   /// module for most project) or something wrong with the implementation of
@@ -609,8 +612,9 @@ ReusableModulesBuilder::~ReusableModulesBuilder() {
 } // namespace
 
 std::unique_ptr<ModulesBuilder>
-ModulesBuilder::getModulesBuilder(const GlobalCompilationDatabase &CDB) {
-  return std::make_unique<ReusableModulesBuilder>(CDB);
+ModulesBuilder::getModulesBuilder(const GlobalCompilationDatabase &CDB,
+                                  PathRef ModuleMapPath) {
+  return std::make_unique<ReusableModulesBuilder>(CDB, ModuleMapPath);
 }
 
 } // namespace clangd

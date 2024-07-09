@@ -17,10 +17,6 @@ namespace clang::clangd {
 namespace {
 /// A scanner to query the dependency information for C++20 Modules.
 ///
-/// The scanner can scan a single file with `scan(PathRef)` member function
-/// or scan the whole project with `globalScan(vector<PathRef>)` member
-/// function. See the comments of `globalScan` to see the details.
-///
 /// The ModuleDependencyScanner can get the directly required module names for a
 /// specific source file. Also the ModuleDependencyScanner can get the source
 /// file declaring the primary module interface for a specific module name.
@@ -55,7 +51,8 @@ public:
   ///
   /// TODO: We should handle the case that there are multiple source files
   /// declaring the same module.
-  PathRef getSourceForModuleNameSlow(llvm::StringRef ModuleName);
+  std::string getSourceForModuleNameSlow(llvm::StringRef ModuleName,
+                                         llvm::StringMap<std::string> &Found);
 
   /// Return the direct required modules. Indirect required modules are not
   /// included.
@@ -116,17 +113,23 @@ ModuleDependencyScanner::scan(PathRef FilePath) {
   return Result;
 }
 
-PathRef ModuleDependencyScanner::getSourceForModuleNameSlow(
-    llvm::StringRef ModuleName) {
+std::string ModuleDependencyScanner::getSourceForModuleNameSlow(
+    llvm::StringRef ModuleName,
+    llvm::StringMap<std::string> &Found) {
   if (!CDB) {
     elog("We need to assign Compilation to Database before scanning.");
     return {};
   }
 
   for (auto &File : CDB->getAllFiles())
-    if (auto ScanningResult = scan(File))
-      if (ScanningResult->ModuleName == ModuleName)
+    if (auto ScanningResult = scan(File)) {
+      if (!ScanningResult->ModuleName)
+        continue;
+
+      Found.insert_or_assign(*ScanningResult->ModuleName, File);
+      if (*ScanningResult->ModuleName == ModuleName)
         return File;
+    }
 
   return {};
 }
@@ -139,11 +142,10 @@ ModuleDependencyScanner::getRequiredModules(PathRef File) {
 
   return ScanningResult->RequiredModules;
 }
-} // namespace
 
 class ProjectModulesImpl : public ProjectModules {
 public:
-  ProjectModulesImpl() = default;
+  ProjectModulesImpl(PathRef ModuleMapPath) : ModuleMapPath(ModuleMapPath) {}
 
   ~ProjectModulesImpl() override = default;
 
@@ -151,7 +153,10 @@ public:
     return Scanner.getRequiredModules(File);
   }
 
-  std::string getSourceForModuleName(llvm::StringRef ModuleName) override {
+  std::string getSourceForModuleName(llvm::StringRef ModuleName,
+                                     const ThreadsafeFS &TFS) override {
+    tryLoadFromModuleMap(TFS);
+
     auto Iter = ModuleNameSourcesCache.find(ModuleName);
     if (Iter != ModuleNameSourcesCache.end()) {
       // We need to verify it since the cache is not stable - it'll
@@ -164,11 +169,8 @@ public:
     }
 
     // Fallback to slow case.
-    PathRef ResultPath = Scanner.getSourceForModuleNameSlow(ModuleName);
-    if (!ResultPath.empty())
-      ModuleNameSourcesCache.insert_or_assign(ModuleName, ResultPath);
-
-    return ResultPath.str();
+    std::string ResultPath = Scanner.getSourceForModuleNameSlow(ModuleName, ModuleNameSourcesCache);
+    return ResultPath;
   }
 
   void update(std::shared_ptr<const clang::tooling::CompilationDatabase> CDB,
@@ -186,13 +188,99 @@ private:
     return ScanningResult->ModuleName == ModuleName;
   }
 
+  // Try to load module name -> module interface unit mapping from
+  // ModuleMapPath.
+  void tryLoadFromModuleMap(const ThreadsafeFS &TFS);
+
+  std::string ModuleMapPath;
+  std::optional<llvm::sys::TimePoint<>> ModuleMapLastModificationTimestamp;
+
   ModuleDependencyScanner Scanner;
 
   llvm::StringMap<std::string> ModuleNameSourcesCache;
 };
 
-std::unique_ptr<ProjectModules> ProjectModules::getProjectModules() {
-  return std::make_unique<ProjectModulesImpl>();
+void ProjectModulesImpl::tryLoadFromModuleMap(const ThreadsafeFS &TFS) {
+  if (ModuleMapPath.empty())
+    return;
+
+  llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> FS = TFS.view(std::nullopt);
+
+  llvm::ErrorOr<llvm::vfs::Status> ModuleMapFileStatus =
+      FS->status(ModuleMapPath);
+  if (auto E = ModuleMapFileStatus.getError()) {
+    log("Failed to get status for module map from {0}", ModuleMapPath);
+    return;
+  }
+
+  llvm::sys::TimePoint<> LastModTime =
+      ModuleMapFileStatus.get().getLastModificationTime();
+
+  // Return early if the module map path doesn't change since last time
+  // we load it.
+  if (ModuleMapLastModificationTimestamp &&
+      ModuleMapLastModificationTimestamp < LastModTime)
+    return;
+
+  ModuleMapLastModificationTimestamp = LastModTime;
+
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> Buffer =
+      FS->getBufferForFile(ModuleMapPath);
+  if (auto E = Buffer.getError()) {
+    log("Failed to get buffer of module map from {0}", ModuleMapPath);
+    return;
+  }
+
+  llvm::StringRef Contents = Buffer.get()->getBuffer();
+  llvm::SmallVector<StringRef, 32> Lines;
+  std::string Separator =
+#ifdef _WIN32
+      "\r\n";
+#else
+      "\n";
+#endif
+  Contents.split(Lines, Separator);
+  for (auto Line : Lines) {
+    // Skip comments if any.
+    if (Line.starts_with("#"))
+      continue;
+
+    auto [ReadModuleName, ModuleUnitPath] = Line.split(' ');
+    ReadModuleName = ReadModuleName.trim();
+    ModuleUnitPath = ModuleUnitPath.trim();
+    if (ReadModuleName.empty() || ModuleUnitPath.empty())
+      continue;
+
+    llvm::SmallString<256> ModuleSourcePath;
+    if (!llvm::sys::path::is_absolute(ModuleUnitPath)) {
+      ModuleSourcePath = ModuleMapPath;
+      llvm::sys::path::remove_filename(ModuleSourcePath);
+      llvm::sys::path::append(ModuleSourcePath, ModuleUnitPath);
+    } else
+      ModuleSourcePath = ModuleUnitPath;
+
+    if (!llvm::sys::fs::exists(ModuleSourcePath)) {
+      log("Recorded module unit path {0} for module {1} not existed.",
+           ModuleSourcePath, ReadModuleName);
+      continue;
+    }
+
+    if (!verifyModuleUnit(ModuleSourcePath, ReadModuleName)) {
+      log("Recorded module unit path {0} doesn't declare module {1}",
+           ModuleSourcePath, ReadModuleName);
+      continue;
+    }
+
+    ModuleNameSourcesCache.insert_or_assign(ReadModuleName,
+                                            (std::string)ModuleSourcePath);
+  }
+}
+
+} // namespace
+
+std::unique_ptr<ProjectModules>
+ProjectModules::getProjectModules(PathRef ModuleMapPath) {
+  return std::make_unique<ProjectModulesImpl>(ModuleMapPath);
 }
 
 } // namespace clang::clangd

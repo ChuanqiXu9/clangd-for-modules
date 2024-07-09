@@ -367,9 +367,15 @@ export module B;
 import M;
 export int B = 44 + M;
   )cpp");
+  CDB.addFile("modules_map", R"cpp(
+#comments
+A A.cppm
+B B.cppm
+M M.cppm
+  )cpp");
 
   std::unique_ptr<ModulesBuilder> Builder =
-      ModulesBuilder::getModulesBuilder(CDB);
+      ModulesBuilder::getModulesBuilder(CDB, getFullPath("modules_map"));
 
   auto AInfo = Builder->buildPrerequisiteModulesFor(getFullPath("A.cppm"), TFS);
   EXPECT_TRUE(AInfo);

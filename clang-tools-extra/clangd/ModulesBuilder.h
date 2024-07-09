@@ -102,7 +102,8 @@ public:
   buildPrerequisiteModulesFor(PathRef File, const ThreadsafeFS &TFS) = 0;
 
   static std::unique_ptr<ModulesBuilder>
-  getModulesBuilder(const GlobalCompilationDatabase &CDB);
+  getModulesBuilder(const GlobalCompilationDatabase &CDB,
+                    PathRef ModuleMapPath = "");
 };
 
 } // namespace clangd

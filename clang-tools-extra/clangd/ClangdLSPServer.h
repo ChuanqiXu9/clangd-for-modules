@@ -66,6 +66,10 @@ public:
 
     /// Flag to hint the experimental modules support is enabled.
     bool EnableExperimentalModulesSupport = false;
+
+    /// The path to the module map file to specify the mapping from
+    /// module name to module interface unit files.
+    std::string ModuleMapPath;
   };
 
   ClangdLSPServer(Transport &Transp, const ThreadsafeFS &TFS,

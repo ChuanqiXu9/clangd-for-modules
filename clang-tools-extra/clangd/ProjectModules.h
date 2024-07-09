@@ -39,7 +39,8 @@ namespace clangd {
 class ProjectModules {
 public:
   virtual std::vector<std::string> getRequiredModules(PathRef File) = 0;
-  virtual std::string getSourceForModuleName(llvm::StringRef ModuleName) = 0;
+  virtual std::string getSourceForModuleName(llvm::StringRef ModuleName,
+                                             const ThreadsafeFS &TFS) = 0;
 
   virtual void
   update(std::shared_ptr<const clang::tooling::CompilationDatabase> CDB,
@@ -47,7 +48,8 @@ public:
 
   virtual ~ProjectModules() = default;
 
-  static std::unique_ptr<ProjectModules> getProjectModules();
+  static std::unique_ptr<ProjectModules>
+  getProjectModules(PathRef ModuleMapPath);
 };
 
 } // namespace clangd

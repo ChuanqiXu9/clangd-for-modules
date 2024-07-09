@@ -555,7 +555,15 @@ opt<bool> ExperimentalModulesSupport{
     "experimental-modules-support",
     cat(Features),
     desc("Experimental support for standard c++ modules"),
-    init(false),
+    init(true),
+};
+
+opt<std::string> ModuleMapPath{
+    "modules-map-path",
+    cat(Features),
+    desc("The path to the module map file describing the mapping "
+         "from module name to module interface units"),
+    init(""),
 };
 
 /// Supports a test URI scheme with relaxed constraints for lit tests.
@@ -868,6 +876,7 @@ clangd accepts flags on the commandline, and in the CLANGD_FLAGS environment var
   ClangdLSPServer::Options Opts;
   Opts.UseDirBasedCDB = (CompileArgsFrom == FilesystemCompileArgs);
   Opts.EnableExperimentalModulesSupport = ExperimentalModulesSupport;
+  Opts.ModuleMapPath = ModuleMapPath;
 
   switch (PCHStorage) {
   case PCHStorageFlag::Memory:
