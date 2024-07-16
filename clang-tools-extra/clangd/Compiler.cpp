@@ -121,6 +121,8 @@ buildCompilerInvocation(const ParseInputs &Inputs, clang::DiagnosticConsumer &D,
   CI->getLangOpts().CommentOpts.ParseAllComments = true;
   CI->getLangOpts().RetainCommentsFromSystemHeaders = true;
 
+  CI->getLangOpts().SkipODRCheckInGMF = true;
+
   disableUnsupportedOptions(*CI);
   return CI;
 }

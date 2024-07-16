@@ -261,6 +261,8 @@ buildModuleFile(llvm::StringRef ModuleName, PathRef ModuleUnitFileName,
   // BMI files.
   CI->getHeaderSearchOpts().ValidateASTInputFilesContent = true;
 
+  CI->getLangOpts().SkipODRCheckInGMF = true;
+
   BuiltModuleFiles.adjustHeaderSearchOptions(CI->getHeaderSearchOpts());
 
   CI->getFrontendOpts().OutputFile = Inputs.CompileCommand.Output;

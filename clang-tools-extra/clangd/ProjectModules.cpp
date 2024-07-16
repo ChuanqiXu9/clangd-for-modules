@@ -88,11 +88,11 @@ ModuleDependencyScanner::scan(PathRef FilePath) {
   // DirectoryBasedGlobalCompilationDatabase::getCompileCommand.
   tooling::CompileCommand Cmd = std::move(Candidates.front());
 
-  Cmd->CommandLine.push_back("-I");
+  Cmd.CommandLine.push_back("-I");
   llvm::SmallString<256> ResourceDir(clang::driver::Driver::GetResourcesPath(
       llvm::sys::fs::getMainExecutable(nullptr, nullptr)));
   llvm::sys::path::append(ResourceDir, "include");
-  Cmd->CommandLine.push_back((std::string)ResourceDir);
+  Cmd.CommandLine.push_back((std::string)ResourceDir);
 
   using namespace clang::tooling::dependencies;
 
