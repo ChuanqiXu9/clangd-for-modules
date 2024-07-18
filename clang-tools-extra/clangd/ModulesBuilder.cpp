@@ -7,13 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "ModulesBuilder.h"
-
 #include "Compiler.h"
 #include "support/Logger.h"
-
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Frontend/FrontendActions.h"
-
 #include "clang/Serialization/ASTReader.h"
 
 namespace clang {
