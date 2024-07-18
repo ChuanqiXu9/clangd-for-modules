@@ -146,11 +146,12 @@ void use() {
 }
   )cpp");
 
-  ModulesBuilder Builder(CDB);
+  std::unique_ptr<ModulesBuilder> Builder =
+      ModulesBuilder::getModulesBuilder(CDB);
 
   // NonModular.cpp is not related to modules. So nothing should be built.
   auto NonModularInfo =
-      Builder.buildPrerequisiteModulesFor(getFullPath("NonModular.cpp"), FS);
+      Builder->buildPrerequisiteModulesFor(getFullPath("NonModular.cpp"), FS);
   EXPECT_TRUE(NonModularInfo);
 
   HeaderSearchOptions HSOpts;
@@ -175,9 +176,10 @@ module;
 export module M;
   )cpp");
 
-  ModulesBuilder Builder(CDB);
+  std::unique_ptr<ModulesBuilder> Builder =
+      ModulesBuilder::getModulesBuilder(CDB);
 
-  auto MInfo = Builder.buildPrerequisiteModulesFor(getFullPath("M.cppm"), FS);
+  auto MInfo = Builder->buildPrerequisiteModulesFor(getFullPath("M.cppm"), FS);
   EXPECT_TRUE(MInfo);
 
   // Nothing should be built since M doesn't dependent on anything.
@@ -214,9 +216,10 @@ import M;
 export module N:Part;
   )cpp");
 
-  ModulesBuilder Builder(CDB);
+  std::unique_ptr<ModulesBuilder> Builder =
+      ModulesBuilder::getModulesBuilder(CDB);
 
-  auto NInfo = Builder.buildPrerequisiteModulesFor(getFullPath("N.cppm"), FS);
+  auto NInfo = Builder->buildPrerequisiteModulesFor(getFullPath("N.cppm"), FS);
   EXPECT_TRUE(NInfo);
 
   ParseInputs NInput = getInputs("N.cppm", CDB);
@@ -275,9 +278,10 @@ import M;
 export module N:Part;
   )cpp");
 
-  ModulesBuilder Builder(CDB);
+  std::unique_ptr<ModulesBuilder> Builder =
+      ModulesBuilder::getModulesBuilder(CDB);
 
-  auto NInfo = Builder.buildPrerequisiteModulesFor(getFullPath("N.cppm"), FS);
+  auto NInfo = Builder->buildPrerequisiteModulesFor(getFullPath("N.cppm"), FS);
   EXPECT_TRUE(NInfo);
   EXPECT_TRUE(NInfo);
 
@@ -313,7 +317,7 @@ export int mm = 44;
   )cpp");
     EXPECT_FALSE(NInfo->canReuse(*Invocation, FS.view(TestDir)));
 
-    NInfo = Builder.buildPrerequisiteModulesFor(getFullPath("N.cppm"), FS);
+    NInfo = Builder->buildPrerequisiteModulesFor(getFullPath("N.cppm"), FS);
     EXPECT_TRUE(NInfo->canReuse(*Invocation, FS.view(TestDir)));
 
     CDB.addFile("foo.h", R"cpp(
@@ -322,7 +326,7 @@ inline void foo(int) {}
   )cpp");
     EXPECT_FALSE(NInfo->canReuse(*Invocation, FS.view(TestDir)));
 
-    NInfo = Builder.buildPrerequisiteModulesFor(getFullPath("N.cppm"), FS);
+    NInfo = Builder->buildPrerequisiteModulesFor(getFullPath("N.cppm"), FS);
     EXPECT_TRUE(NInfo->canReuse(*Invocation, FS.view(TestDir)));
   }
 
@@ -332,7 +336,7 @@ export module N:Part;
 export int NPart = 4LIdjwldijaw
   )cpp");
   EXPECT_FALSE(NInfo->canReuse(*Invocation, FS.view(TestDir)));
-  NInfo = Builder.buildPrerequisiteModulesFor(getFullPath("N.cppm"), FS);
+  NInfo = Builder->buildPrerequisiteModulesFor(getFullPath("N.cppm"), FS);
   EXPECT_TRUE(NInfo);
   EXPECT_FALSE(NInfo->canReuse(*Invocation, FS.view(TestDir)));
 
@@ -342,7 +346,7 @@ export int NPart = 43;
   )cpp");
   EXPECT_TRUE(NInfo);
   EXPECT_FALSE(NInfo->canReuse(*Invocation, FS.view(TestDir)));
-  NInfo = Builder.buildPrerequisiteModulesFor(getFullPath("N.cppm"), FS);
+  NInfo = Builder->buildPrerequisiteModulesFor(getFullPath("N.cppm"), FS);
   EXPECT_TRUE(NInfo);
   EXPECT_TRUE(NInfo->canReuse(*Invocation, FS.view(TestDir)));
 
@@ -378,10 +382,11 @@ export void printA();
 import A;
 )cpp");
 
-  ModulesBuilder Builder(CDB);
+  std::unique_ptr<ModulesBuilder> Builder =
+      ModulesBuilder::getModulesBuilder(CDB);
 
   ParseInputs Use = getInputs("Use.cpp", CDB);
-  Use.ModulesManager = &Builder;
+  Use.ModulesManager = Builder.get();
 
   std::unique_ptr<CompilerInvocation> CI =
       buildCompilerInvocation(Use, DiagConsumer);
@@ -452,7 +457,7 @@ M M.cppm
   EXPECT_TRUE(llvm::sys::fs::exists(CacheDir));
 
   Builder = ModulesBuilder::getModulesBuilder(CDB);
-  Builder->buildPrerequisiteModulesFor(getFullPath("A.cppm"), TFS);
+  Builder->buildPrerequisiteModulesFor(getFullPath("A.cppm"), FS);
   // Check that the persistent module file are touched.
   // FIXME: It is not tested very well.
   EXPECT_FALSE(llvm::sys::fs::exists(CacheDir));

@@ -105,7 +105,6 @@ add_clang_library(clangDaemon
   Preamble.cpp
   ProjectModules.cpp
   RIFF.cpp
-  ScanningProjectModules.cpp
   Selection.cpp
   SemanticHighlighting.cpp
   SemanticSelection.cpp
