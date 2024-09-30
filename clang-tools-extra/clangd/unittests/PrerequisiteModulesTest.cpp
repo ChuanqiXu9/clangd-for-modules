@@ -406,61 +406,86 @@ import A;
   EXPECT_TRUE(D.isFromASTFile());
 }
 
-TEST_F(PrerequisiteModulesTests, ReusablePrerequisiteModulesTest) {
+// An end to end test for code complete in modules
+TEST_F(PrerequisiteModulesTests, CodeCompleteTest) {
   MockDirectoryCompilationDatabase CDB(TestDir, FS);
 
-  CDB.addFile("M.cppm", R"cpp(
-export module M;
-export int M = 43;
-  )cpp");
   CDB.addFile("A.cppm", R"cpp(
 export module A;
-import M;
-export int A = 43 + M;
+export void printA();
   )cpp");
-  CDB.addFile("B.cppm", R"cpp(
-export module B;
-import M;
-export int B = 44 + M;
-  )cpp");
-  CDB.addFile("modules_map", R"cpp(
-#comments
-A A.cppm
-B B.cppm
-M M.cppm
-  )cpp");
+
+  llvm::StringLiteral UserContents = R"cpp(
+import A;
+void func() {
+  print^
+}
+)cpp";
+
+  CDB.addFile("Use.cpp", UserContents);
+  Annotations Test(UserContents);
 
   std::unique_ptr<ModulesBuilder> Builder =
-      ModulesBuilder::getModulesBuilder(CDB, getFullPath("modules_map"));
+        ModulesBuilder::getModulesBuilder(CDB);
 
-  auto AInfo = Builder->buildPrerequisiteModulesFor(getFullPath("A.cppm"), FS);
-  EXPECT_TRUE(AInfo);
-  auto BInfo = Builder->buildPrerequisiteModulesFor(getFullPath("B.cppm"), FS);
-  EXPECT_TRUE(BInfo);
-  HeaderSearchOptions HSOptsA(TestDir);
-  HeaderSearchOptions HSOptsB(TestDir);
-  AInfo->adjustHeaderSearchOptions(HSOptsA);
-  BInfo->adjustHeaderSearchOptions(HSOptsB);
+  ParseInputs Use = getInputs("Use.cpp", CDB);
+  Use.ModulesManager = Builder.get();
 
-  EXPECT_FALSE(HSOptsA.PrebuiltModuleFiles.empty());
-  EXPECT_FALSE(HSOptsB.PrebuiltModuleFiles.empty());
+  std::unique_ptr<CompilerInvocation> CI =
+      buildCompilerInvocation(Use, DiagConsumer);
+  EXPECT_TRUE(CI);
 
-  // Check that we're reusing the module files.
-  EXPECT_EQ(HSOptsA.PrebuiltModuleFiles, HSOptsB.PrebuiltModuleFiles);
+  auto Preamble =
+      buildPreamble(getFullPath("Use.cpp"), *CI, Use, /*InMemory=*/true,
+                    /*Callback=*/nullptr);
+  EXPECT_TRUE(Preamble);
+  EXPECT_TRUE(Preamble->RequiredModules);
+  
+  auto Result = codeComplete(getFullPath("Use.cpp"), Test.point(),
+                             Preamble.get(), Use, {});
+  EXPECT_FALSE(Result.Completions.empty());
+  EXPECT_EQ(Result.Completions[0].Name, "printA");
+}
 
-  Builder.reset();
+TEST_F(PrerequisiteModulesTests, SignatureHelpTest) {
+  MockDirectoryCompilationDatabase CDB(TestDir, FS);
 
-  // Check that the persistent module file exists.
-  llvm::SmallString<256> CacheDir = StringRef(HSOptsA.PrebuiltModuleFiles["M"]);
-  llvm::sys::path::remove_filename(CacheDir);
-  llvm::sys::path::append(CacheDir, "M.pcm");
-  EXPECT_TRUE(llvm::sys::fs::exists(CacheDir));
+  CDB.addFile("A.cppm", R"cpp(
+export module A;
+export void printA(int a);
+  )cpp");
 
-  Builder = ModulesBuilder::getModulesBuilder(CDB);
-  Builder->buildPrerequisiteModulesFor(getFullPath("A.cppm"), FS);
-  // Check that the persistent module file are touched.
-  // FIXME: It is not tested very well.
-  EXPECT_FALSE(llvm::sys::fs::exists(CacheDir));
+  llvm::StringLiteral UserContents = R"cpp(
+import A;
+void func() {
+  printA(^);
+}
+)cpp";
+
+  CDB.addFile("Use.cpp", UserContents);
+  Annotations Test(UserContents);
+
+  std::unique_ptr<ModulesBuilder> Builder =
+        ModulesBuilder::getModulesBuilder(CDB);
+
+  ParseInputs Use = getInputs("Use.cpp", CDB);
+  Use.ModulesManager = Builder.get();
+
+  std::unique_ptr<CompilerInvocation> CI =
+      buildCompilerInvocation(Use, DiagConsumer);
+  EXPECT_TRUE(CI);
+
+  auto Preamble =
+      buildPreamble(getFullPath("Use.cpp"), *CI, Use, /*InMemory=*/true,
+                    /*Callback=*/nullptr);
+  EXPECT_TRUE(Preamble);
+  EXPECT_TRUE(Preamble->RequiredModules);
+  
+  auto Result = signatureHelp(getFullPath("Use.cpp"), Test.point(),
+                              *Preamble.get(), Use, MarkupKind::PlainText);
+  EXPECT_FALSE(Result.signatures.empty());
+  EXPECT_EQ(Result.signatures[0].label, "printA(int a) -> void");
+  EXPECT_EQ(Result.signatures[0].parameters[0].labelString, "int a");
 }
 
 } // namespace
