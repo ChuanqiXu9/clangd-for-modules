@@ -1,3 +1,5 @@
+
+
 A preview for C++20 Named Modules Support in clangd.
 
 This repo is created for users who would like to use modules with clangd
@@ -7,7 +9,7 @@ We still wish to contribute this to upstream.
 
 Following the instructions here to [build clangd from source](https://github.com/llvm/llvm-project/tree/main/clang-tools-extra/clangd#building-and-testing-clangd).
 
-A compile commands file is neceesary to use this with modules.
+A compile commands file is necessary to use this with modules.
 
 An important assumption for this to work correctly is that there is no
 multiple module interface units declare the same module unit name. The standard forbids the case where duplicated module units occurs in a program.
